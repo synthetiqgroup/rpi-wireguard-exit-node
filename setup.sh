@@ -341,7 +341,6 @@ bantime.maxtime    = 24h
 enabled  = true
 port     = 22,2222
 filter   = sshd
-logpath  = %(journald_backend)s
 backend  = systemd
 maxretry = 3
 EOF

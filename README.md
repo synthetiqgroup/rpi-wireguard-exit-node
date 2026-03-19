@@ -118,6 +118,36 @@ Two manual steps remain (the script reminds you):
 2. **Client config** — paste the generated `.conf` into your WireGuard client
    *(e.g. GL.iNet → VPN → WireGuard Client → Add Profiles → Manually)*
 
+## Managing Client Profiles
+
+After setup, use `manage.sh` to manage your WireGuard server from the command line:
+
+```bash
+# Health check: WireGuard, DuckDNS, public IP, disk, fail2ban...
+sudo bash manage.sh status
+
+# List all profiles and their connection status
+sudo bash manage.sh list
+
+# Display a profile's .conf + QR code (interactive picker if no name given)
+sudo bash manage.sh show
+sudo bash manage.sh show phone
+
+# Add one or more profiles
+sudo bash manage.sh add phone laptop
+
+# Remove profiles (will ask for confirmation)
+sudo bash manage.sh remove phone laptop
+
+# Remove without confirmation
+sudo bash manage.sh remove phone -y
+
+# Update the DuckDNS token (tested immediately)
+sudo bash manage.sh duckdns-token a1b2c3d4-e5f6-7890-abcd-ef1234567890
+```
+
+Aliases: `ls` for `list`, `rm` or `del` for `remove`.
+
 ## What the Script Does
 
 | Step | Description |
@@ -164,6 +194,7 @@ Your actual speed is limited by the **slowest link** in the chain:
 | Two devices share the same `.conf` | Only the last connected device works | Each profile has a unique key pair — **1 profile = 1 device at a time**. Create a separate profile per device. |
 | VPN connected but no internet | MASQUERADE rule missing or wrong | The script auto-fixes this (step 7). If re-running manually: `pivpn debug` |
 | Slow download, fast upload | ISP or mobile carrier throttling UDP | Test on a different network — this is not a tunnel issue |
+| fail2ban fails to start | `logpath` set with `backend = systemd` | Remove any `logpath` line from `/etc/fail2ban/jail.local` — systemd backend reads from journald directly |
 
 ## Disclaimer
 
