@@ -118,7 +118,7 @@ Two manual steps remain (the script reminds you):
 2. **Client config** — paste the generated `.conf` into your WireGuard client
    *(e.g. GL.iNet → VPN → WireGuard Client → Add Profiles → Manually)*
 
-## Managing Client Profiles
+## Managing the Server
 
 After setup, use `manage.sh` to manage your WireGuard server from the command line:
 
