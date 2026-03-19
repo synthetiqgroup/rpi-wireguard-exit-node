@@ -5,9 +5,10 @@ from your home IP — even when you're on the other side of the world.
 
 > **Tested on Raspberry Pi 3B** with Raspberry Pi OS Lite 64-bit. Should work on any RPi 3B or newer running the same OS.
 
-**Use case:** You're travelling in a country with restricted internet access
-and want unrestricted access through your home connection in France. All your devices
-connect to the RPi via a WireGuard tunnel, and traffic exits with your home IP.
+**Use case:** You're travelling abroad and some websites, streaming services, or apps
+don't work the same way — or at all. This setup lets you route all your traffic through
+your home IP. Your devices connect to the RPi via a WireGuard tunnel and everything
+works as if you were at home.
 
 ## Why Not a Commercial VPN?
 
@@ -43,7 +44,7 @@ flowchart LR
         end
     end
 
-    subgraph home["🏠 Home (e.g. France)"]
+    subgraph home["🏠 Home"]
         direction TB
         isp["🌐 ISP Router<br/>NAT: 51820/UDP → RPi"]
         rpi["🍓 Raspberry Pi<br/>WireGuard Server<br/>+ DuckDNS"]

@@ -5,10 +5,10 @@
 #   sudo bash setup.sh
 #
 # USE CASE:
-#   You leave the RPi at home (e.g. France) connected to your ISP router.
-#   When travelling abroad (e.g. countries with restricted internet access), you
-#   connect a WireGuard client to this RPi and all your traffic exits through
-#   your home IP — bypassing local internet restrictions.
+#   You leave the RPi at home connected to your ISP router.
+#   When travelling abroad, some content may be geo-restricted or unavailable.
+#   By connecting a WireGuard client to this RPi, all your traffic exits through
+#   your home IP — accessing content as if you were at home.
 #   Example client: GL.iNet GL-MT3000 (Beryl AX) travel router, but any
 #   WireGuard-compatible device or app works (phone, laptop, other router...).
 #
