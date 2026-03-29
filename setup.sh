@@ -13,18 +13,17 @@
 #   WireGuard-compatible device or app works (phone, laptop, other router...).
 #
 # WHAT THIS SCRIPT DOES (in order):
-#   1.  System update (apt update + upgrade)
+#   1.  Refreshes package lists (apt update)
 #   2.  Creates a dedicated VPN user (vpnuser) with sudo rights
-#   3.  Installs dependencies (curl, cron, iptables-persistent, fail2ban...)
-#   4.  Installs and configures DuckDNS (dynamic DNS, updates every 5 min)
+#   3.  Installs dependencies (curl, cron, iptables-persistent, unattended-upgrades)
+#   4.  Configures DuckDNS update script (dynamic DNS)
 #   5.  Enables IP forwarding (required for WireGuard to route traffic)
 #   6.  Installs PiVPN / WireGuard in unattended mode
 #   7.  Fixes the iptables NAT rule for WireGuard (PiVPN bug workaround)
 #       and makes iptables rules persistent across reboots
 #   8.  Creates the WireGuard client profile(s)
-#   9.  Configures fail2ban (progressive SSH banning)
-#   10. Configures logrotate for DuckDNS logs + limits journald to 100MB
-#   11. Schedules daily apt update + reboot at 3:00 AM
+#   9.  Configures logrotate for DuckDNS logs + limits journald to 100MB
+#   10. Schedules DuckDNS cron job (every 5 min, optional)
 #
 # WHAT THIS SCRIPT DOES NOT DO:
 #   - Configure the WireGuard client device (paste the generated .conf manually)
@@ -40,8 +39,7 @@
 #   2. NAT/PAT port forwarding — so traffic from the internet reaches the RPi:
 #      Router admin -> NAT / Port forwarding
 #      -> WireGuard : 51820 UDP (external) -> <RPi_LOCAL_IP>:51820 (internal)
-#      -> SSH        : 2222  TCP (external) -> <RPi_LOCAL_IP>:22    (internal)
-#      (Adjust the port numbers if you changed WG_PORT above)
+#      (Adjust the port number if you changed WG_PORT above)
 #
 # HOW TO GET YOUR DUCKDNS TOKEN:
 #   1. Go to https://www.duckdns.org
@@ -99,6 +97,12 @@ VPN_DNS2="1.0.0.1"
 # Network interface facing the internet (eth0 on wired RPi)
 WAN_IFACE="eth0"
 
+# DuckDNS cron -- set to false if another service on this machine already
+# updates the SAME DuckDNS domain (e.g. rpi-docker-webhost).
+# The update script is always created (for manual testing via manage.sh).
+# Only the cron job is skipped when set to false.
+DUCKDNS_CRON=true
+
 # =============================================================================
 # END OF CONFIGURATION
 # =============================================================================
@@ -117,13 +121,13 @@ echo "  WireGuard subnet: (auto-detected after install)"
 echo "=============================================="
 
 # ------------------------------------------------------------------------------
-# 1. System update
+# 1. Refresh package lists
 # ------------------------------------------------------------------------------
 echo ""
-echo "[1/11] System update..."
-apt update -qq && apt full-upgrade -y -qq
-apt autoremove -y -qq
-echo "  ✓ System up to date"
+echo "[1/10] Refreshing package lists..."
+apt update -qq
+UPDATES_AVAILABLE=$(apt list --upgradable 2>/dev/null | grep -c upgradable || true)
+echo "  ✓ Package lists updated"
 
 # ------------------------------------------------------------------------------
 # 2. Create dedicated VPN user
@@ -132,7 +136,7 @@ echo "  ✓ System up to date"
 #    - No password login (access via SSH key or su from another user)
 # ------------------------------------------------------------------------------
 echo ""
-echo "[2/11] Creating VPN user '${VPN_USER}'..."
+echo "[2/10] Creating VPN user '${VPN_USER}'..."
 
 if id "${VPN_USER}" &>/dev/null; then
     echo "  User ${VPN_USER} already exists, skipping creation"
@@ -148,11 +152,11 @@ fi
 # 3. Install dependencies
 # ------------------------------------------------------------------------------
 echo ""
-echo "[3/11] Installing dependencies..."
+echo "[3/10] Installing dependencies..."
 # Pre-answer iptables-persistent debconf prompts to avoid interactive dialogs
 echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
 echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
-apt install -y curl cron iptables-persistent fail2ban unattended-upgrades -qq
+apt install -y curl cron iptables-persistent unattended-upgrades -qq
 echo "  ✓ Dependencies installed"
 
 # ------------------------------------------------------------------------------
@@ -161,7 +165,7 @@ echo "  ✓ Dependencies installed"
 #    Script and logs are owned by VPN_USER.
 # ------------------------------------------------------------------------------
 echo ""
-echo "[4/11] Configuring DuckDNS..."
+echo "[4/10] Configuring DuckDNS..."
 
 mkdir -p "${DUCKDNS_DIR}"
 
@@ -191,7 +195,7 @@ fi
 #    Must be done BEFORE PiVPN install so it is in place when PiVPN configures wg0.
 # ------------------------------------------------------------------------------
 echo ""
-echo "[5/11] Enabling IP forwarding..."
+echo "[5/10] Enabling IP forwarding..."
 
 touch /etc/sysctl.conf
 if ! grep -q "^net.ipv4.ip_forward=1" /etc/sysctl.conf; then
@@ -217,7 +221,7 @@ echo "  ✓ IP forwarding enabled"
 #    The subnet is auto-detected in step 7 after install.
 # ------------------------------------------------------------------------------
 echo ""
-echo "[6/11] Installing PiVPN / WireGuard (unattended)..."
+echo "[6/10] Installing PiVPN / WireGuard (unattended)..."
 
 if [ -f /etc/wireguard/wg0.conf ]; then
     echo "  WireGuard already installed, skipping PiVPN install."
@@ -249,7 +253,7 @@ fi
 #    Safe to re-run after PiVPN install.
 # ------------------------------------------------------------------------------
 echo ""
-echo "[7/11] Fixing iptables NAT rule for WireGuard..."
+echo "[7/10] Fixing iptables NAT rule for WireGuard..."
 
 # Auto-detect subnet from wg0.conf if not set manually
 if [ -z "${WG_SUBNET}" ]; then
@@ -297,7 +301,7 @@ fi
 #    Profiles: WG_CLIENT_NAMES array. Client IP: first available in the WireGuard subnet.
 # ------------------------------------------------------------------------------
 echo ""
-echo "[8/11] Creating WireGuard client profiles..."
+echo "[8/10] Creating WireGuard client profiles..."
 
 for CLIENT_NAME in "${WG_CLIENT_NAMES[@]}"; do
     CLIENT_CONF="/home/${VPN_USER}/configs/${CLIENT_NAME}.conf"
@@ -318,44 +322,12 @@ for CLIENT_NAME in "${WG_CLIENT_NAMES[@]}"; do
 done
 
 # ------------------------------------------------------------------------------
-# 9. fail2ban
-#    Progressive SSH banning after 3 failed attempts:
-#    1min -> 5min -> 25min -> ~2h -> up to 24h max
-#    Covers both port 22 (LAN) and port 2222 (internet-facing via router NAT)
-# ------------------------------------------------------------------------------
-echo ""
-echo "[9/11] Configuring fail2ban..."
-
-cat > /etc/fail2ban/jail.local << EOF
-[DEFAULT]
-bantime  = 1m
-findtime = 10m
-maxretry = 3
-
-# Each subsequent ban multiplies duration by 5, up to 24h
-bantime.increment  = true
-bantime.multiplier = 5
-bantime.maxtime    = 24h
-
-[sshd]
-enabled  = true
-port     = 22,2222
-filter   = sshd
-backend  = systemd
-maxretry = 3
-EOF
-
-systemctl enable fail2ban > /dev/null
-systemctl restart fail2ban
-echo "  ✓ fail2ban configured (3 attempts -> progressive ban up to 24h)"
-
-# ------------------------------------------------------------------------------
-# 10. Log management
+# 9. Log management
 #    - logrotate: rotate duck.log daily, keep 7 days compressed
 #    - journald: cap total log size at 100MB (default is 10% of disk)
 # ------------------------------------------------------------------------------
 echo ""
-echo "[10/11] Configuring log rotation..."
+echo "[9/10] Configuring log rotation..."
 
 cat > /etc/logrotate.d/duckdns << EOF
 ${DUCKDNS_DIR}/duck.log {
@@ -382,28 +354,22 @@ echo "  ✓ logrotate configured for DuckDNS logs (7 days, compressed)"
 echo "  ✓ journald capped at 100MB"
 
 # ------------------------------------------------------------------------------
-# 11. Cron jobs
-#    DuckDNS runs as VPN_USER for proper file ownership.
-#    apt update and reboot run as root.
-#    - DuckDNS update  : every 5 minutes
-#    - apt update      : 3:00 AM daily (refresh package list only, no install)
-#    - reboot          : 3:05 AM daily (after apt update completes)
+# 10. Cron job
+#     DuckDNS runs as VPN_USER for proper file ownership.
+#     Skipped if DUCKDNS_CRON=false (another service already updates the domain).
 # ------------------------------------------------------------------------------
 echo ""
-echo "[11/11] Configuring cron jobs..."
+echo "[10/10] Configuring DuckDNS cron job..."
 
-# DuckDNS cron -- runs as VPN_USER
-(crontab -u "${VPN_USER}" -l 2>/dev/null | grep -v "duck.sh"; \
- echo "*/5 * * * * ${DUCKDNS_DIR}/duck.sh") | crontab -u "${VPN_USER}" -
-
-# Root cron -- apt update + reboot
-(crontab -l 2>/dev/null | grep -v "apt update" | grep -v "/sbin/reboot"; \
- echo "0 3 * * * apt update -qq"; \
- echo "5 3 * * * /sbin/reboot") | crontab -
-
-echo "  ✓ DuckDNS update : every 5 minutes (runs as ${VPN_USER})"
-echo "  ✓ apt update     : daily at 3:00 AM"
-echo "  ✓ reboot         : daily at 3:05 AM"
+if [ "${DUCKDNS_CRON}" = "true" ]; then
+    # DuckDNS cron -- runs as VPN_USER
+    (crontab -u "${VPN_USER}" -l 2>/dev/null | grep -v "duck.sh"; \
+     echo "*/5 * * * * ${DUCKDNS_DIR}/duck.sh") | crontab -u "${VPN_USER}" -
+    echo "  ✓ DuckDNS update : every 5 minutes (runs as ${VPN_USER})"
+else
+    echo "  ⏭ DuckDNS cron skipped (DUCKDNS_CRON=false)"
+    echo "    Another service on this machine already updates ${DUCKDNS_FQDN}"
+fi
 
 # ------------------------------------------------------------------------------
 # Summary
@@ -421,11 +387,15 @@ echo "  Public IP       : $(curl -s https://api.ipify.org)"
 echo "  RPi local IP    : ${LOCAL_IP}"
 echo "  WireGuard subnet: ${WG_SUBNET}"
 echo ""
+if [ "${UPDATES_AVAILABLE}" -gt 0 ] 2>/dev/null; then
+    echo "  ⚠ ${UPDATES_AVAILABLE} package update(s) available."
+    echo "    Run 'sudo apt upgrade' to install them."
+    echo ""
+fi
 echo "  REMAINING MANUAL STEPS:"
 echo ""
 echo "  1. On your router admin panel -> NAT/PAT (port forwarding), add:"
 echo "       ${WG_PORT} UDP -> ${LOCAL_IP}  (WireGuard)"
-echo "       2222  TCP -> ${LOCAL_IP}  (SSH backup)"
 echo ""
 echo "  2. Client profiles:"
 for CLIENT_NAME in "${WG_CLIENT_NAMES[@]}"; do
@@ -436,15 +406,7 @@ for CLIENT_NAME in "${WG_CLIENT_NAMES[@]}"; do
         echo "     ✗ ${CLIENT_NAME} -- not created. Run: pivpn add -n ${CLIENT_NAME} -ip auto"
     fi
 done
-echo "=============================================="
-
-# ------------------------------------------------------------------------------
-# Reboot
-#   - Clean state after apt full-upgrade (new kernel, libs, services)
-#   - Verifies that iptables rules survive a reboot (netfilter-persistent)
-#   - Ensures WireGuard (wg-quick@wg0) starts automatically on boot
-# ------------------------------------------------------------------------------
 echo ""
-echo "  Rebooting in 5 seconds... (Ctrl+C to cancel)"
-sleep 5
-reboot
+echo "  It is strongly recommended you reboot to verify that"
+echo "  WireGuard and iptables rules persist across reboots."
+echo "=============================================="

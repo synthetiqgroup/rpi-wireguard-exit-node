@@ -5,12 +5,12 @@
 #   sudo bash manage.sh <command> [options]
 #
 # COMMANDS:
-#   status                    Health check: WireGuard, DuckDNS, public IP, disk, uptime
+#   status                    Health check: WireGuard, DuckDNS, public IP, disk
 #   list                      List all client profiles and their connection status
 #   show <name>               Display a profile's .conf and QR code
 #   add  <name> [name2] ...   Create one or more client profiles
 #   remove <name> [name2] ... Remove one or more client profiles (-y to skip confirmation)
-#   duckdns-token <token>     Update the DuckDNS token and test it immediately
+#   duckdns-token <token>     Replace the DuckDNS token and verify it works
 #
 # EXAMPLES:
 #   sudo bash manage.sh status
@@ -58,7 +58,7 @@ usage() {
     echo "  show <name>                 Display a profile (.conf + QR code)"
     echo "  add  <name> [name2] ...     Create one or more profiles"
     echo "  remove <name> [name2] ...   Remove one or more profiles"
-    echo "  duckdns-token <token>       Update the DuckDNS token"
+    echo "  duckdns-token <token>       Replace the DuckDNS token and verify it works"
     echo ""
     echo -e "${BOLD}Options:${NC}"
     echo "  -y, --yes                   Skip confirmation on remove"
@@ -109,9 +109,6 @@ cmd_status() {
     echo ""
     echo -e "${BOLD}System status${NC}"
     echo "═════════════════════════════════════════"
-
-    # Uptime
-    echo -e "${CYAN}Uptime:${NC}         $(uptime -p 2>/dev/null || uptime)"
 
     # Disk usage
     local disk_usage
@@ -202,19 +199,6 @@ cmd_status() {
                 echo -e "  DNS match:      ${YELLOW}✗ DNS=${dns_ip} vs IP=${pub_ip}${NC}"
             fi
         fi
-    fi
-
-    echo ""
-    echo -e "${BOLD}fail2ban${NC}"
-    echo "─────────────────────────────────────────"
-
-    if systemctl is-active --quiet fail2ban 2>/dev/null; then
-        echo -e "  Service:        ${GREEN}active${NC}"
-        local banned
-        banned=$(fail2ban-client status sshd 2>/dev/null | grep "Currently banned" | awk '{print $NF}')
-        echo -e "  Banned IPs:     ${banned:-0}"
-    else
-        echo -e "  Service:        ${RED}inactive${NC}"
     fi
 
     echo ""

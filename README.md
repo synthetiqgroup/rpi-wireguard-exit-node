@@ -104,15 +104,14 @@ sudo bash setup.sh
 
 The script is fully unattended — zero interactive prompts. It will:
 
-- Install & configure everything (WireGuard, DuckDNS, fail2ban, iptables, cron...)
+- Install & configure everything (WireGuard, DuckDNS, iptables, unattended-upgrades...)
 - Print each client `.conf` to the terminal — paste it into your WireGuard client
-- Reboot at the end to verify everything starts cleanly
 
 ## After the Script
 
 Two manual steps remain (the script reminds you):
 
-1. **Router port forwarding** — forward `51820/UDP` and `2222/TCP` to the RPi's local IP
+1. **Router port forwarding** — forward `51820/UDP` to the RPi's local IP
    *(router admin is often at `192.168.1.1` or `192.168.0.1` — check your router's docs)*
 
 2. **Client config** — paste the generated `.conf` into your WireGuard client
@@ -123,7 +122,7 @@ Two manual steps remain (the script reminds you):
 After setup, use `manage.sh` to manage your WireGuard server from the command line:
 
 ```bash
-# Health check: WireGuard, DuckDNS, public IP, disk, fail2ban...
+# Health check: WireGuard, DuckDNS, public IP, disk...
 sudo bash manage.sh status
 
 # List all profiles and their connection status
@@ -142,7 +141,7 @@ sudo bash manage.sh remove phone laptop
 # Remove without confirmation
 sudo bash manage.sh remove phone -y
 
-# Update the DuckDNS token (tested immediately)
+# Replace the DuckDNS token and verify it works
 sudo bash manage.sh duckdns-token a1b2c3d4-e5f6-7890-abcd-ef1234567890
 ```
 
@@ -152,19 +151,24 @@ Aliases: `ls` for `list`, `rm` or `del` for `remove`.
 
 | Step | Description |
 | ------ | ------------- |
-| 1 | System update (`apt update` + `full-upgrade`) |
+| 1 | Refresh package lists (`apt update`) |
 | 2 | Create dedicated VPN user with sudo (no password login) |
-| 3 | Install dependencies (curl, iptables-persistent, fail2ban...) |
-| 4 | Configure DuckDNS (dynamic DNS, 5-min cron update) |
+| 3 | Install dependencies (curl, iptables-persistent, unattended-upgrades) |
+| 4 | Configure DuckDNS update script (dynamic DNS) |
 | 5 | Enable IP forwarding |
 | 6 | Install PiVPN / WireGuard (unattended) |
 | 7 | Fix iptables NAT rule (PiVPN bug workaround) + persist rules |
 | 8 | Create WireGuard client profile(s) |
-| 9 | Configure fail2ban (progressive SSH banning, up to 24h) |
-| 10 | Configure logrotate + cap journald at 100 MB |
-| 11 | Schedule daily apt update + reboot at 3 AM |
+| 9 | Configure logrotate + cap journald at 100 MB |
+| 10 | Schedule DuckDNS cron job (every 5 min, optional) |
 
 > All configuration is in the top section of `setup.sh` — see the inline comments for details.
+
+## Coexistence with Other Services
+
+If another service on this machine already updates **the same DuckDNS domain**, set `DUCKDNS_CRON=false` in `setup.sh`. The DuckDNS update script is still created (for manual testing via `manage.sh`), but the cron job is skipped.
+
+If you use a **different DuckDNS domain** for this service, leave `DUCKDNS_CRON=true`.
 
 ## Performance
 
@@ -186,15 +190,12 @@ Your actual speed is limited by the **slowest link** in the chain:
 | Problem | Cause | Fix |
 | ------- | ----- | --- |
 | `syntax error near unexpected token (` | Script was run with `sh` instead of `bash` | Use `sudo bash setup.sh` — arrays require bash |
-| `iptables-persistent` shows interactive dialog | `debconf` prompts not pre-answered | Already handled in the script. If installing manually: run `echo iptables-persistent iptables-persistent/autosave_v4 boolean true \| debconf-set-selections` first |
-| `pivpn add` prompts for IP interactively | Missing `-ip auto` flag | Already handled in the script, but if running manually: `pivpn add -n name -ip auto` |
 | DuckDNS returns `KO` | Wrong token or subdomain | Double-check `DUCKDNS_TOKEN` and `DUCKDNS_DOMAIN` at [duckdns.org](https://www.duckdns.org) |
 | PiVPN install fails | RPi hostname is too long | Keep hostname under 20 characters (`sudo hostnamectl set-hostname short-name`) |
 | `pivpn add` refuses the profile name | Name exceeds 15 characters | WireGuard interface names are limited to 15 chars — use shorter names |
 | Two devices share the same `.conf` | Only the last connected device works | Each profile has a unique key pair — **1 profile = 1 device at a time**. Create a separate profile per device. |
-| VPN connected but no internet | MASQUERADE rule missing or wrong | The script auto-fixes this (step 7). If re-running manually: `pivpn debug` |
 | Slow download, fast upload | ISP or mobile carrier throttling UDP | Test on a different network — this is not a tunnel issue |
-| fail2ban fails to start | `logpath` set with `backend = systemd` | Remove any `logpath` line from `/etc/fail2ban/jail.local` — systemd backend reads from journald directly |
+| WireGuard app says "endpoint domain could not be resolved" but WireGuard is running fine on the RPi | The client's ISP does not resolve `*.duckdns.org` subdomains (common with some mobile carriers abroad) | Replace the domain with the server's public IP in the client config `Endpoint` field. Find the IP with: `https://dns.google/resolve?name=YOUR-SUBDOMAIN.duckdns.org&type=A`. For a permanent fix, set **Private DNS** on the phone to `one.one.one.one` (Android: Settings → Network → Private DNS) so the domain works directly. |
 
 ## Disclaimer
 
