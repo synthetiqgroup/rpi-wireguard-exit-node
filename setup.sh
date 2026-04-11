@@ -363,7 +363,7 @@ echo "[10/10] Configuring DuckDNS cron job..."
 
 if [ "${DUCKDNS_CRON}" = "true" ]; then
     # DuckDNS cron -- runs as VPN_USER
-    (crontab -u "${VPN_USER}" -l 2>/dev/null | grep -v "duck.sh"; \
+    (crontab -u "${VPN_USER}" -l 2>/dev/null | grep -v "duck.sh" || true; \
      echo "*/5 * * * * ${DUCKDNS_DIR}/duck.sh") | crontab -u "${VPN_USER}" -
     echo "  ✓ DuckDNS update : every 5 minutes (runs as ${VPN_USER})"
 else
