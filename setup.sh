@@ -18,12 +18,15 @@
 #   3.  Installs dependencies (curl, cron, iptables-persistent, unattended-upgrades)
 #   4.  Configures DuckDNS update script (dynamic DNS)
 #   5.  Enables IP forwarding (required for WireGuard to route traffic)
+#       and disables IPv6 on all interfaces (permanent, this setup is IPv4-only)
 #   6.  Installs PiVPN / WireGuard in unattended mode
 #   7.  Fixes the iptables NAT rule for WireGuard (PiVPN bug workaround)
 #       and makes iptables rules persistent across reboots
 #   8.  Creates the WireGuard client profile(s)
 #   9.  Configures logrotate for DuckDNS logs + limits journald to 100MB
 #   10. Schedules DuckDNS cron job (every 5 min, optional)
+#   11. Runs utils.sh (optional, ENABLE_EXTRA_HARDENING=true by default):
+#       full apt upgrade, fail2ban, daily apt update + reboot cron, reboot.
 #
 # WHAT THIS SCRIPT DOES NOT DO:
 #   - Configure the WireGuard client device (paste the generated .conf manually)
@@ -102,6 +105,11 @@ WAN_IFACE="eth0"
 # The update script is always created (for manual testing via manage.sh).
 # Only the cron job is skipped when set to false.
 DUCKDNS_CRON=true
+
+# Extra hardening -- runs utils.sh at the end of setup (full apt upgrade,
+# fail2ban, daily apt update + reboot cron, and a final reboot).
+# Set to false to keep this script strictly VPN-exit-node scoped.
+ENABLE_EXTRA_HARDENING=true
 
 # =============================================================================
 # END OF CONFIGURATION
@@ -190,19 +198,33 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# 5. IP forwarding
-#    Required for WireGuard to forward packets from VPN clients to the internet.
-#    Must be done BEFORE PiVPN install so it is in place when PiVPN configures wg0.
+# 5. IP forwarding + disable IPv6
+#    IP forwarding required for WireGuard to forward packets from VPN clients
+#    to the internet. Must be done BEFORE PiVPN install so it is in place when
+#    PiVPN configures wg0.
+#    IPv6 is disabled on all interfaces to prevent IPv6 leaks: this setup is
+#    IPv4-only end to end (WireGuard, DuckDNS, DNS servers, port forwarding),
+#    so any IPv6 traffic would otherwise bypass the tunnel entirely.
 # ------------------------------------------------------------------------------
 echo ""
-echo "[5/10] Enabling IP forwarding..."
+echo "[5/10] Enabling IP forwarding and disabling IPv6..."
 
 touch /etc/sysctl.conf
 if ! grep -q "^net.ipv4.ip_forward=1" /etc/sysctl.conf; then
     echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
 fi
+
+if ! grep -q "^net.ipv6.conf.all.disable_ipv6=1" /etc/sysctl.conf; then
+    cat >> /etc/sysctl.conf << EOF
+net.ipv6.conf.all.disable_ipv6=1
+net.ipv6.conf.default.disable_ipv6=1
+net.ipv6.conf.lo.disable_ipv6=1
+EOF
+fi
+
 sysctl -p > /dev/null
 echo "  ✓ IP forwarding enabled"
+echo "  ✓ IPv6 disabled on all interfaces (permanent)"
 
 # ------------------------------------------------------------------------------
 # 6. PiVPN / WireGuard -- unattended install
@@ -299,6 +321,8 @@ fi
 # 8. WireGuard client profiles
 #    Generates .conf files to paste into the WireGuard clients.
 #    Profiles: WG_CLIENT_NAMES array. Client IP: first available in the WireGuard subnet.
+#    AllowedIPs also covers ::/0 so IPv6 traffic is tunneled (and dropped, not
+#    leaked) instead of bypassing the VPN over the client's native IPv6.
 # ------------------------------------------------------------------------------
 echo ""
 echo "[8/10] Creating WireGuard client profiles..."
@@ -310,6 +334,11 @@ for CLIENT_NAME in "${WG_CLIENT_NAMES[@]}"; do
     else
         if command -v pivpn &>/dev/null; then
             pivpn add -n "${CLIENT_NAME}" -ip auto
+            # Force IPv6 traffic through the tunnel too (server drops it, IPv6
+            # is disabled) so the client can't leak it outside the VPN.
+            if ! grep -q "::/0" "${CLIENT_CONF}"; then
+                sed -i "s/^AllowedIPs = 0.0.0.0\/0$/AllowedIPs = 0.0.0.0\/0, ::\/0/" "${CLIENT_CONF}"
+            fi
             echo "  ✓ Profile created: ${CLIENT_CONF}"
             echo ""
             echo "  --- ${CLIENT_NAME} config (paste into VPN -> WireGuard Client -> Add Profiles -> Manually) ---"
@@ -396,6 +425,9 @@ echo "  REMAINING MANUAL STEPS:"
 echo ""
 echo "  1. On your router admin panel -> NAT/PAT (port forwarding), add:"
 echo "       ${WG_PORT} UDP -> ${LOCAL_IP}  (WireGuard)"
+if [ "${ENABLE_EXTRA_HARDENING}" = "true" ]; then
+    echo "       2222  TCP -> ${LOCAL_IP}  (SSH, protected by fail2ban)"
+fi
 echo ""
 echo "  2. Client profiles:"
 for CLIENT_NAME in "${WG_CLIENT_NAMES[@]}"; do
@@ -407,6 +439,17 @@ for CLIENT_NAME in "${WG_CLIENT_NAMES[@]}"; do
     fi
 done
 echo ""
-echo "  It is strongly recommended you reboot to verify that"
-echo "  WireGuard and iptables rules persist across reboots."
+if [ "${ENABLE_EXTRA_HARDENING}" != "true" ]; then
+    echo "  It is strongly recommended you reboot to verify that"
+    echo "  WireGuard and iptables rules persist across reboots."
+fi
 echo "=============================================="
+
+# -----------------------------------------------------------------------------
+# Extra hardening (optional)
+#   Runs after the summary since it ends with a reboot.
+# -----------------------------------------------------------------------------
+if [ "${ENABLE_EXTRA_HARDENING}" = "true" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    bash "${SCRIPT_DIR}/utils.sh"
+fi

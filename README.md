@@ -105,7 +105,9 @@ sudo bash setup.sh
 The script is fully unattended — zero interactive prompts. It will:
 
 - Install & configure everything (WireGuard, DuckDNS, iptables, unattended-upgrades...)
+- Disable IPv6 on the RPi and route it (dead-ended) through the tunnel — prevents IPv6 leaks
 - Print each client `.conf` to the terminal — paste it into your WireGuard client
+- Run `utils.sh` at the end (full apt upgrade, fail2ban, daily reboot cron) unless `ENABLE_EXTRA_HARDENING=false`
 
 ## After the Script
 
@@ -113,6 +115,7 @@ Three manual steps remain:
 
 1. **Router port forwarding** — forward `51820/UDP` to the RPi's local IP
    *(router admin is often at `192.168.1.1` or `192.168.0.1` — check your router's docs)*
+   *(if `ENABLE_EXTRA_HARDENING=true`, also forward `2222/TCP` for fail2ban-protected SSH)*
 
 2. **Client config** — paste the generated `.conf` into your WireGuard client
    *(e.g. GL.iNet → VPN → WireGuard Client → Add Profiles → Manually)*
@@ -126,7 +129,7 @@ Three manual steps remain:
 After setup, use `manage.sh` to manage your WireGuard server from the command line:
 
 ```bash
-# Health check: WireGuard, DuckDNS, public IP, disk...
+# Health check: WireGuard, DuckDNS, public IP, disk (+ fail2ban if installed)...
 sudo bash manage.sh status
 
 # List all profiles and their connection status
@@ -159,12 +162,13 @@ Aliases: `ls` for `list`, `rm` or `del` for `remove`.
 | 2 | Create dedicated VPN user with sudo (no password login) |
 | 3 | Install dependencies (curl, iptables-persistent, unattended-upgrades) |
 | 4 | Configure DuckDNS update script (dynamic DNS) |
-| 5 | Enable IP forwarding |
+| 5 | Enable IP forwarding + disable IPv6 on all interfaces (leak prevention) |
 | 6 | Install PiVPN / WireGuard (unattended) |
 | 7 | Fix iptables NAT rule (PiVPN bug workaround) + persist rules |
-| 8 | Create WireGuard client profile(s) |
+| 8 | Create WireGuard client profile(s), force IPv6 (`::/0`) into the tunnel |
 | 9 | Configure logrotate + cap journald at 100 MB |
 | 10 | Schedule DuckDNS cron job (every 5 min, optional) |
+| 11 | Run `utils.sh` (optional, see below) |
 
 > All configuration is in the top section of `setup.sh` — see the inline comments for details.
 
@@ -173,6 +177,25 @@ Aliases: `ls` for `list`, `rm` or `del` for `remove`.
 If another service on this machine already updates **the same DuckDNS domain**, set `DUCKDNS_CRON=false` in `setup.sh`. The DuckDNS update script is still created (for manual testing via `manage.sh`), but the cron job is skipped.
 
 If you use a **different DuckDNS domain** for this service, leave `DUCKDNS_CRON=true`.
+
+## Preventing IPv6 Leaks
+
+This setup is IPv4-only end to end (WireGuard, DuckDNS, DNS servers, port forwarding). To make sure a client with native IPv6 connectivity can't bypass the tunnel:
+
+- IPv6 is disabled at the kernel level on the RPi, on all interfaces (step 5)
+- Each generated client profile routes `::/0` into the tunnel alongside `0.0.0.0/0` (step 8), so IPv6 traffic is dead-ended on the server instead of leaking over the client's local network
+- **If you use a travel router (GL.iNet or similar, Option A):** also disable IPv6 on the router's LAN/WAN interfaces. Many travel routers relay a public IPv6 prefix (delegated from the local WiFi/4G WAN) directly to LAN clients via SLAAC — devices then get a native IPv6 address routed straight to the WAN, completely bypassing the WireGuard tunnel. Disabling IPv6 in the router's network settings (GL.iNet UI or LuCI → Network → LAN/WAN) closes this leak. This does not apply to Option B (WireGuard app installed directly on the device).
+
+## Extra Hardening (utils.sh)
+
+`setup.sh` runs `utils.sh` at the very end when `ENABLE_EXTRA_HARDENING=true` (default). It goes beyond strict VPN-exit-node scope:
+
+- Full system upgrade (`apt full-upgrade` + `autoremove`)
+- `fail2ban` with progressive SSH banning (1min → 5min → 25min → ... → 24h max, ports 22 and 2222)
+- Daily cron: `apt update` at 3:00 AM, reboot at 3:05 AM
+- A final reboot (5s delay, Ctrl+C to cancel) to verify everything survives a restart
+
+Set `ENABLE_EXTRA_HARDENING=false` in `setup.sh` to skip `utils.sh` entirely and keep the server strictly VPN-scoped.
 
 ## Performance
 

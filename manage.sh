@@ -6,6 +6,7 @@
 #
 # COMMANDS:
 #   status                    Health check: WireGuard, DuckDNS, public IP, disk
+#                             (+ fail2ban, if installed via utils.sh)
 #   list                      List all client profiles and their connection status
 #   show <name>               Display a profile's .conf and QR code
 #   add  <name> [name2] ...   Create one or more client profiles
@@ -198,6 +199,22 @@ cmd_status() {
             elif [ -n "$dns_ip" ]; then
                 echo -e "  DNS match:      ${YELLOW}✗ DNS=${dns_ip} vs IP=${pub_ip}${NC}"
             fi
+        fi
+    fi
+
+    # fail2ban -- only shown if utils.sh hardening installed it
+    if command -v fail2ban-client &>/dev/null; then
+        echo ""
+        echo -e "${BOLD}fail2ban${NC}"
+        echo "─────────────────────────────────────────"
+
+        if systemctl is-active --quiet fail2ban 2>/dev/null; then
+            echo -e "  Service:        ${GREEN}active${NC}"
+            local banned
+            banned=$(fail2ban-client status sshd 2>/dev/null | grep "Currently banned" | awk '{print $NF}')
+            echo -e "  Banned IPs:     ${banned:-0}"
+        else
+            echo -e "  Service:        ${RED}inactive${NC}"
         fi
     fi
 
