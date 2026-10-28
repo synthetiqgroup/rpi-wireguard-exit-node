@@ -109,13 +109,17 @@ The script is fully unattended — zero interactive prompts. It will:
 
 ## After the Script
 
-Two manual steps remain (the script reminds you):
+Three manual steps remain:
 
 1. **Router port forwarding** — forward `51820/UDP` to the RPi's local IP
    *(router admin is often at `192.168.1.1` or `192.168.0.1` — check your router's docs)*
 
 2. **Client config** — paste the generated `.conf` into your WireGuard client
    *(e.g. GL.iNet → VPN → WireGuard Client → Add Profiles → Manually)*
+
+3. **Set the client MTU to 1500** — in your WireGuard client settings, set `MTU = 1500`
+   *(e.g. GL.iNet → VPN → WireGuard Client → edit profile → MTU)*. Without this, some apps
+   (WhatsApp in particular) fail to connect or send messages even though browsing works.
 
 ## Managing the Server
 
@@ -194,6 +198,7 @@ Your actual speed is limited by the **slowest link** in the chain:
 | PiVPN install fails | RPi hostname is too long | Keep hostname under 20 characters (`sudo hostnamectl set-hostname short-name`) |
 | `pivpn add` refuses the profile name | Name exceeds 15 characters | WireGuard interface names are limited to 15 chars — use shorter names |
 | Two devices share the same `.conf` | Only the last connected device works | Each profile has a unique key pair — **1 profile = 1 device at a time**. Create a separate profile per device. |
+| Browsing works but WhatsApp (or other apps) can't connect / send messages | MTU mismatch on the client side | Set `MTU = 1500` in the WireGuard client config (see [After the Script](#after-the-script), step 3) |
 | Slow download, fast upload | ISP or mobile carrier throttling UDP | Test on a different network — this is not a tunnel issue |
 | WireGuard app says "endpoint domain could not be resolved" but WireGuard is running fine on the RPi | The client's ISP does not resolve `*.duckdns.org` subdomains (common with some mobile carriers abroad) | Replace the domain with the server's public IP in the client config `Endpoint` field. Find the IP with: `https://dns.google/resolve?name=YOUR-SUBDOMAIN.duckdns.org&type=A`. For a permanent fix, set **Private DNS** on the phone to `one.one.one.one` (Android: Settings → Network → Private DNS) so the domain works directly. |
 
