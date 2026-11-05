@@ -47,7 +47,7 @@ flowchart LR
     subgraph home["🏠 Home"]
         direction TB
         isp["🌐 ISP Router<br/>NAT: 51820/UDP → RPi"]
-        rpi["🍓 Raspberry Pi<br/>WireGuard Server<br/>+ DuckDNS"]
+        rpi["🍓 Raspberry Pi<br/>WireGuard Server<br/>+ dynv6"]
         rpi -->|eth0| isp
     end
 
@@ -70,7 +70,7 @@ flowchart LR
 **How it works:**
 
 1. The RPi sits at home, connected to your ISP router via ethernet
-2. [DuckDNS](https://www.duckdns.org) keeps a public DNS name pointing to your home IP (updated every 5 min)
+2. [dynv6](https://dynv6.com) keeps a public DNS name pointing to your home IP (updated every 5 min)
 3. Your ISP router forwards port 51820/UDP to the RPi
 4. Abroad, your devices connect to the RPi through a WireGuard tunnel — either:
    - **Option A:** via a travel router (e.g. GL.iNet Beryl AX) — all devices behind it are tunnelled automatically
@@ -83,7 +83,7 @@ flowchart LR
 | ------ | --------- |
 | **Raspberry Pi** | 3B or newer, with Raspberry Pi OS Lite 64-bit (fresh install) |
 | **Network** | RPi connected via ethernet to your ISP router |
-| **DuckDNS account** | Free — sign up at [duckdns.org](https://www.duckdns.org), create a subdomain, grab your token |
+| **dynv6 account** | Free — sign up at [dynv6.com](https://dynv6.com), create a zone (e.g. `my-rpi.dynv6.net`), grab an HTTP token at [dynv6.com/keys](https://dynv6.com/keys) |
 | **Router access** | Ability to set up a DHCP static lease + port forwarding (NAT/PAT) |
 | **WireGuard client** | Any device or app: travel router, phone, laptop... |
 
@@ -95,7 +95,7 @@ git clone https://github.com/synthetiqgroup/rpi-wireguard-exit-node.git
 cd rpi-wireguard-exit-node
 
 # 2. Edit the configuration section at the top of the script
-#    → Set your DuckDNS token, subdomain, and client profile name(s)
+#    → Set your dynv6 token, hostname, and client profile name(s)
 nano setup.sh
 
 # 3. Run it (must be root, must be bash)
@@ -104,7 +104,7 @@ sudo bash setup.sh
 
 The script is fully unattended — zero interactive prompts. It will:
 
-- Install & configure everything (WireGuard, DuckDNS, iptables, unattended-upgrades...)
+- Install & configure everything (WireGuard, dynv6, iptables, unattended-upgrades...)
 - Disable IPv6 on the RPi and route it (dead-ended) through the tunnel — prevents IPv6 leaks
 - Print each client `.conf` to the terminal — paste it into your WireGuard client
 - Run `utils.sh` at the end (full apt upgrade, fail2ban, daily reboot cron) unless `ENABLE_EXTRA_HARDENING=false`
@@ -129,7 +129,7 @@ Three manual steps remain:
 After setup, use `manage.sh` to manage your WireGuard server from the command line:
 
 ```bash
-# Health check: WireGuard, DuckDNS, public IP, disk (+ fail2ban if installed)...
+# Health check: WireGuard, dynv6, public IP, disk (+ fail2ban if installed)...
 sudo bash manage.sh status
 
 # List all profiles and their connection status
@@ -148,8 +148,8 @@ sudo bash manage.sh remove phone laptop
 # Remove without confirmation
 sudo bash manage.sh remove phone -y
 
-# Replace the DuckDNS token and verify it works
-sudo bash manage.sh duckdns-token a1b2c3d4-e5f6-7890-abcd-ef1234567890
+# Replace the dynv6 token and verify it works
+sudo bash manage.sh dynv6-token <new-token>
 ```
 
 Aliases: `ls` for `list`, `rm` or `del` for `remove`.
@@ -161,28 +161,28 @@ Aliases: `ls` for `list`, `rm` or `del` for `remove`.
 | 1 | Refresh package lists (`apt update`) |
 | 2 | Create dedicated VPN user with sudo (no password login) |
 | 3 | Install dependencies (curl, iptables-persistent, unattended-upgrades) |
-| 4 | Configure DuckDNS update script (dynamic DNS) |
-| 5 | Enable IP forwarding + disable IPv6 on all interfaces (leak prevention) |
+| 4 | Configure dynv6 update script (dynamic DNS) |
+| 5 | Enable IP forwarding + disable IPv6 on all interfaces (leak prevention, via `/etc/sysctl.d/`) |
 | 6 | Install PiVPN / WireGuard (unattended) |
 | 7 | Fix iptables NAT rule (PiVPN bug workaround) + persist rules |
 | 8 | Create WireGuard client profile(s), force IPv6 (`::/0`) into the tunnel |
 | 9 | Configure logrotate + cap journald at 100 MB |
-| 10 | Schedule DuckDNS cron job (every 5 min, optional) |
+| 10 | Schedule dynv6 cron job (every 5 min, optional) |
 | 11 | Run `utils.sh` (optional, see below) |
 
 > All configuration is in the top section of `setup.sh` — see the inline comments for details.
 
 ## Coexistence with Other Services
 
-If another service on this machine already updates **the same DuckDNS domain**, set `DUCKDNS_CRON=false` in `setup.sh`. The DuckDNS update script is still created (for manual testing via `manage.sh`), but the cron job is skipped.
+If another service on this machine already updates **the same dynv6 hostname**, set `DYNV6_CRON=false` in `setup.sh`. The dynv6 update script is still created (for manual testing via `manage.sh`), but the cron job is skipped.
 
-If you use a **different DuckDNS domain** for this service, leave `DUCKDNS_CRON=true`.
+If you use a **different dynv6 hostname** for this service, leave `DYNV6_CRON=true`.
 
 ## Preventing IPv6 Leaks
 
-This setup is IPv4-only end to end (WireGuard, DuckDNS, DNS servers, port forwarding). To make sure a client with native IPv6 connectivity can't bypass the tunnel:
+This setup is IPv4-only end to end (WireGuard, dynv6, DNS servers, port forwarding). To make sure a client with native IPv6 connectivity can't bypass the tunnel:
 
-- IPv6 is disabled at the kernel level on the RPi, on all interfaces (step 5)
+- IPv6 is disabled at the kernel level on the RPi, on all interfaces (step 5). The settings live in `/etc/sysctl.d/`, since Debian 13 (trixie) no longer reads `/etc/sysctl.conf` at boot, and NetworkManager connection profiles are set to `ipv6.method=disabled` (otherwise NetworkManager re-enables IPv6 on the interfaces it manages)
 - Each generated client profile routes `::/0` into the tunnel alongside `0.0.0.0/0` (step 8), so IPv6 traffic is dead-ended on the server instead of leaking over the client's local network
 - **If you use a travel router (GL.iNet or similar, Option A):** also disable IPv6 on the router's LAN/WAN interfaces. Many travel routers relay a public IPv6 prefix (delegated from the local WiFi/4G WAN) directly to LAN clients via SLAAC — devices then get a native IPv6 address routed straight to the WAN, completely bypassing the WireGuard tunnel. Disabling IPv6 in the router's network settings (GL.iNet UI or LuCI → Network → LAN/WAN) closes this leak. This does not apply to Option B (WireGuard app installed directly on the device).
 
@@ -217,13 +217,13 @@ Your actual speed is limited by the **slowest link** in the chain:
 | Problem | Cause | Fix |
 | ------- | ----- | --- |
 | `syntax error near unexpected token (` | Script was run with `sh` instead of `bash` | Use `sudo bash setup.sh` — arrays require bash |
-| DuckDNS returns `KO` | Wrong token or subdomain | Double-check `DUCKDNS_TOKEN` and `DUCKDNS_DOMAIN` at [duckdns.org](https://www.duckdns.org) |
+| dynv6 returns `invalid authentication token` or `zone not found` | Wrong token or hostname | Double-check `DYNV6_TOKEN` at [dynv6.com/keys](https://dynv6.com/keys) and `DYNV6_HOSTNAME` (full name, e.g. `my-rpi.dynv6.net`) |
 | PiVPN install fails | RPi hostname is too long | Keep hostname under 20 characters (`sudo hostnamectl set-hostname short-name`) |
 | `pivpn add` refuses the profile name | Name exceeds 15 characters | WireGuard interface names are limited to 15 chars — use shorter names |
 | Two devices share the same `.conf` | Only the last connected device works | Each profile has a unique key pair — **1 profile = 1 device at a time**. Create a separate profile per device. |
 | Browsing works but WhatsApp (or other apps) can't connect / send messages | MTU mismatch on the client side | Set `MTU = 1500` in the WireGuard client config (see [After the Script](#after-the-script), step 3) |
 | Slow download, fast upload | ISP or mobile carrier throttling UDP | Test on a different network — this is not a tunnel issue |
-| WireGuard app says "endpoint domain could not be resolved" but WireGuard is running fine on the RPi | The client's ISP does not resolve `*.duckdns.org` subdomains (common with some mobile carriers abroad) | Replace the domain with the server's public IP in the client config `Endpoint` field. Find the IP with: `https://dns.google/resolve?name=YOUR-SUBDOMAIN.duckdns.org&type=A`. For a permanent fix, set **Private DNS** on the phone to `one.one.one.one` (Android: Settings → Network → Private DNS) so the domain works directly. |
+| WireGuard app says "endpoint domain could not be resolved" but WireGuard is running fine on the RPi | The client's DNS resolver does not resolve the dynamic DNS domain (common with some mobile carriers abroad) | Replace the domain with the server's public IP in the client config `Endpoint` field. Find the IP with: `https://dns.google/resolve?name=YOUR-HOSTNAME&type=A`. For a permanent fix, set **Private DNS** on the phone to `one.one.one.one` (Android: Settings → Network → Private DNS) so the domain works directly. |
 
 ## Disclaimer
 

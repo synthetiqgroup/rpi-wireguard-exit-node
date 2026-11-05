@@ -16,15 +16,15 @@
 #   1.  Refreshes package lists (apt update)
 #   2.  Creates a dedicated VPN user (vpnuser) with sudo rights
 #   3.  Installs dependencies (curl, cron, iptables-persistent, unattended-upgrades)
-#   4.  Configures DuckDNS update script (dynamic DNS)
+#   4.  Configures dynv6 update script (dynamic DNS)
 #   5.  Enables IP forwarding (required for WireGuard to route traffic)
 #       and disables IPv6 on all interfaces (permanent, this setup is IPv4-only)
 #   6.  Installs PiVPN / WireGuard in unattended mode
 #   7.  Fixes the iptables NAT rule for WireGuard (PiVPN bug workaround)
 #       and makes iptables rules persistent across reboots
 #   8.  Creates the WireGuard client profile(s)
-#   9.  Configures logrotate for DuckDNS logs + limits journald to 100MB
-#   10. Schedules DuckDNS cron job (every 5 min, optional)
+#   9.  Configures logrotate for dynv6 logs + limits journald to 100MB
+#   10. Schedules dynv6 cron job (every 5 min, optional)
 #   11. Runs utils.sh (optional, ENABLE_EXTRA_HARDENING=true by default):
 #       full apt upgrade, fail2ban, daily apt update + reboot cron, reboot.
 #
@@ -44,16 +44,17 @@
 #      -> WireGuard : 51820 UDP (external) -> <RPi_LOCAL_IP>:51820 (internal)
 #      (Adjust the port number if you changed WG_PORT above)
 #
-# HOW TO GET YOUR DUCKDNS TOKEN:
-#   1. Go to https://www.duckdns.org
-#   2. Sign in with GitHub or Google
-#   3. Your token is displayed at the top of the page (long UUID string)
-#   4. Create a subdomain (e.g. "my-rpi") -> you get my-rpi.duckdns.org
-#   5. Replace DUCKDNS_TOKEN and DUCKDNS_DOMAIN below with your values
+# HOW TO GET YOUR DYNV6 HOSTNAME AND TOKEN:
+#   1. Go to https://dynv6.com and sign in
+#   2. Create a zone (e.g. "my-rpi" under one of the free domains such as
+#      dynv6.net or dns.navy) -> you get my-rpi.dynv6.net
+#   3. Get your HTTP token at https://dynv6.com/keys (section "HTTP Tokens")
+#   4. Replace DYNV6_TOKEN and DYNV6_HOSTNAME below with your values
 #
 # TO RENEW / REPLACE TOKEN:
-#   - Log back into duckdns.org -- your token is always visible on the dashboard
-#   - Update DUCKDNS_TOKEN below and re-run this script
+#   - Create a new token at https://dynv6.com/keys
+#   - Run: sudo bash manage.sh dynv6-token <new-token>
+#     (or update DYNV6_TOKEN below and re-run this script)
 #
 # PIVPN UNATTENDED MODE:
 #   PiVPN supports --unattended with a setupVars.conf file (discovered from
@@ -73,11 +74,11 @@ echo "--- Setup started: $(date) ---"
 # CONFIGURATION -- update these values before running
 # =============================================================================
 
-# DuckDNS -- get token at https://www.duckdns.org
-DUCKDNS_TOKEN="YOUR-DUCKDNS-TOKEN-HERE"      # e.g. "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-DUCKDNS_DOMAIN="your-subdomain"                # without .duckdns.org
+# dynv6 -- get token at https://dynv6.com/keys
+DYNV6_TOKEN="YOUR-DYNV6-TOKEN-HERE"            # HTTP token from https://dynv6.com/keys
+DYNV6_HOSTNAME="your-zone.dynv6.net"           # full hostname, e.g. "my-rpi.dns.navy"
 
-# VPN user -- owns DuckDNS scripts and WireGuard config
+# VPN user -- owns dynv6 scripts and WireGuard config
 # PiVPN will also be installed under this user
 VPN_USER="vpnuser"
 
@@ -100,11 +101,11 @@ VPN_DNS2="1.0.0.1"
 # Network interface facing the internet (eth0 on wired RPi)
 WAN_IFACE="eth0"
 
-# DuckDNS cron -- set to false if another service on this machine already
-# updates the SAME DuckDNS domain (e.g. rpi-docker-webhost).
+# dynv6 cron -- set to false if another service on this machine already
+# updates the SAME dynv6 hostname (e.g. rpi-docker-webhost).
 # The update script is always created (for manual testing via manage.sh).
 # Only the cron job is skipped when set to false.
-DUCKDNS_CRON=true
+DYNV6_CRON=true
 
 # Extra hardening -- runs utils.sh at the end of setup (full apt upgrade,
 # fail2ban, daily apt update + reboot cron, and a final reboot).
@@ -115,14 +116,13 @@ ENABLE_EXTRA_HARDENING=true
 # END OF CONFIGURATION
 # =============================================================================
 
-DUCKDNS_FQDN="${DUCKDNS_DOMAIN}.duckdns.org"
-DUCKDNS_DIR="/home/${VPN_USER}/duckdns"
+DYNV6_DIR="/home/${VPN_USER}/dynv6"
 WG_SUBNET=""   # populated automatically after PiVPN install in step 7
 
 echo "=============================================="
 echo "  RPi VPN Setup"
 echo "=============================================="
-echo "  DuckDNS domain  : ${DUCKDNS_FQDN}"
+echo "  dynv6 hostname  : ${DYNV6_HOSTNAME}"
 echo "  VPN user        : ${VPN_USER}"
 echo "  Client profiles : ${WG_CLIENT_NAMES[*]}"
 echo "  WireGuard subnet: (auto-detected after install)"
@@ -168,32 +168,36 @@ apt install -y curl cron iptables-persistent unattended-upgrades -qq
 echo "  ✓ Dependencies installed"
 
 # ------------------------------------------------------------------------------
-# 4. DuckDNS
-#    Updates the public IP on DuckDNS every 5 minutes via cron.
-#    Script and logs are owned by VPN_USER.
+# 4. dynv6
+#    Updates the public IPv4 on dynv6 every 5 minutes via cron.
+#    curl -4 + ipv4=auto: dynv6 records the source address of the request,
+#    forced over IPv4 so it is the home IPv4 even if the RPi has IPv6.
+#    Script (contains the token, mode 700) and logs are owned by VPN_USER.
 # ------------------------------------------------------------------------------
 echo ""
-echo "[4/10] Configuring DuckDNS..."
+echo "[4/10] Configuring dynv6..."
 
-mkdir -p "${DUCKDNS_DIR}"
+mkdir -p "${DYNV6_DIR}"
 
-cat > "${DUCKDNS_DIR}/duck.sh" << EOF
+cat > "${DYNV6_DIR}/dynv6.sh" << EOF
 #!/bin/bash
-curl -s "https://www.duckdns.org/update?domains=${DUCKDNS_DOMAIN}&token=${DUCKDNS_TOKEN}&ip=" > ${DUCKDNS_DIR}/duck.log 2>&1
+DYNV6_HOSTNAME="${DYNV6_HOSTNAME}"
+DYNV6_TOKEN="${DYNV6_TOKEN}"
+curl -4 -s --max-time 30 "https://dynv6.com/api/update?hostname=\${DYNV6_HOSTNAME}&token=\${DYNV6_TOKEN}&ipv4=auto" > ${DYNV6_DIR}/dynv6.log 2>&1
 EOF
 
-chmod +x "${DUCKDNS_DIR}/duck.sh"
-chown -R "${VPN_USER}:${VPN_USER}" "${DUCKDNS_DIR}"
+chmod 700 "${DYNV6_DIR}/dynv6.sh"
+chown -R "${VPN_USER}:${VPN_USER}" "${DYNV6_DIR}"
 
-# Test immediately
-sudo -u "${VPN_USER}" "${DUCKDNS_DIR}/duck.sh"
-RESULT=$(cat "${DUCKDNS_DIR}/duck.log")
+# Test immediately -- dynv6 answers "addresses updated" or "addresses unchanged"
+sudo -u "${VPN_USER}" "${DYNV6_DIR}/dynv6.sh"
+RESULT=$(cat "${DYNV6_DIR}/dynv6.log")
 
-if [ "$RESULT" = "OK" ]; then
-    echo "  ✓ DuckDNS OK -- ${DUCKDNS_FQDN} points to $(curl -s https://api.ipify.org)"
+if [[ "$RESULT" =~ ^addresses\ (updated|unchanged) ]]; then
+    echo "  ✓ dynv6 OK -- ${DYNV6_HOSTNAME} points to $(curl -4 -s https://api.ipify.org)"
 else
-    echo "  error DuckDNS error: $RESULT"
-    echo "  Check DUCKDNS_TOKEN and DUCKDNS_DOMAIN, then re-run."
+    echo "  error dynv6 error: $RESULT"
+    echo "  Check DYNV6_TOKEN and DYNV6_HOSTNAME, then re-run."
     exit 1
 fi
 
@@ -203,26 +207,46 @@ fi
 #    to the internet. Must be done BEFORE PiVPN install so it is in place when
 #    PiVPN configures wg0.
 #    IPv6 is disabled on all interfaces to prevent IPv6 leaks: this setup is
-#    IPv4-only end to end (WireGuard, DuckDNS, DNS servers, port forwarding),
+#    IPv4-only end to end (WireGuard, dynv6, DNS servers, port forwarding),
 #    so any IPv6 traffic would otherwise bypass the tunnel entirely.
+#    Settings go to /etc/sysctl.d/: Debian 13 (trixie) no longer reads
+#    /etc/sysctl.conf at boot. Lines left there by older versions are removed.
+#    NetworkManager profiles are also set to ipv6.method=disabled (see below).
 # ------------------------------------------------------------------------------
 echo ""
 echo "[5/10] Enabling IP forwarding and disabling IPv6..."
 
-touch /etc/sysctl.conf
-if ! grep -q "^net.ipv4.ip_forward=1" /etc/sysctl.conf; then
-    echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-fi
-
-if ! grep -q "^net.ipv6.conf.all.disable_ipv6=1" /etc/sysctl.conf; then
-    cat >> /etc/sysctl.conf << EOF
+SYSCTL_CONF="/etc/sysctl.d/99-wireguard-exit-node.conf"
+cat > "${SYSCTL_CONF}" << EOF
+net.ipv4.ip_forward=1
 net.ipv6.conf.all.disable_ipv6=1
 net.ipv6.conf.default.disable_ipv6=1
 net.ipv6.conf.lo.disable_ipv6=1
 EOF
+
+if [ -f /etc/sysctl.conf ]; then
+    sed -i -E '/^net\.ipv4\.ip_forward=1$/d; /^net\.ipv6\.conf\.(all|default|lo)\.disable_ipv6=1$/d' /etc/sysctl.conf
 fi
 
-sysctl -p > /dev/null
+sysctl -p "${SYSCTL_CONF}" > /dev/null
+
+# NetworkManager (default on Raspberry Pi OS since bookworm) re-enables IPv6
+# on the interfaces it manages (ipv6.method=auto), overriding the sysctl above.
+# Disable IPv6 on every ethernet / Wi-Fi connection profile it knows.
+if command -v nmcli &>/dev/null && systemctl is-active --quiet NetworkManager; then
+    while IFS=: read -r NM_UUID NM_TYPE; do
+        case "${NM_TYPE}" in
+            802-3-ethernet|802-11-wireless) ;;
+            *) continue ;;
+        esac
+        if [ "$(nmcli -g ipv6.method connection show "${NM_UUID}")" != "disabled" ]; then
+            nmcli connection modify "${NM_UUID}" ipv6.method disabled
+            echo "  ✓ IPv6 disabled in NetworkManager profile $(nmcli -g connection.id connection show "${NM_UUID}")"
+        fi
+    done < <(nmcli -g UUID,TYPE connection show)
+    # Apply now on the WAN interface (IPv4 settings unchanged, no disconnect)
+    nmcli device reapply "${WAN_IFACE}" > /dev/null 2>&1 || true
+fi
 echo "  ✓ IP forwarding enabled"
 echo "  ✓ IPv6 disabled on all interfaces (permanent)"
 
@@ -247,6 +271,12 @@ echo "[6/10] Installing PiVPN / WireGuard (unattended)..."
 
 if [ -f /etc/wireguard/wg0.conf ]; then
     echo "  WireGuard already installed, skipping PiVPN install."
+    # Keep the hostname used for new profiles in sync with DYNV6_HOSTNAME
+    PIVPN_VARS="/etc/pivpn/wireguard/setupVars.conf"
+    if [ -f "${PIVPN_VARS}" ] && ! grep -q "^pivpnHOST=${DYNV6_HOSTNAME}$" "${PIVPN_VARS}"; then
+        sed -i "s|^pivpnHOST=.*|pivpnHOST=${DYNV6_HOSTNAME}|" "${PIVPN_VARS}"
+        echo "  ✓ PiVPN hostname updated to ${DYNV6_HOSTNAME} (new profiles only)"
+    fi
 else
     cat > /tmp/pivpn-unattended.conf << EOF
 VPN=wireguard
@@ -255,7 +285,7 @@ IPv4dev=${WAN_IFACE}
 pivpnPORT=${WG_PORT}
 pivpnDNS1=${VPN_DNS1}
 pivpnDNS2=${VPN_DNS2}
-pivpnHOST=${DUCKDNS_FQDN}
+pivpnHOST=${DYNV6_HOSTNAME}
 pivpnPERSISTENTKEEPALIVE=25
 EOF
 
@@ -352,14 +382,14 @@ done
 
 # ------------------------------------------------------------------------------
 # 9. Log management
-#    - logrotate: rotate duck.log daily, keep 7 days compressed
+#    - logrotate: rotate dynv6.log daily, keep 7 days compressed
 #    - journald: cap total log size at 100MB (default is 10% of disk)
 # ------------------------------------------------------------------------------
 echo ""
 echo "[9/10] Configuring log rotation..."
 
-cat > /etc/logrotate.d/duckdns << EOF
-${DUCKDNS_DIR}/duck.log {
+cat > /etc/logrotate.d/dynv6 << EOF
+${DYNV6_DIR}/dynv6.log {
     su ${VPN_USER} ${VPN_USER}
     rotate 7
     daily
@@ -379,25 +409,25 @@ else
 fi
 systemctl restart systemd-journald
 
-echo "  ✓ logrotate configured for DuckDNS logs (7 days, compressed)"
+echo "  ✓ logrotate configured for dynv6 logs (7 days, compressed)"
 echo "  ✓ journald capped at 100MB"
 
 # ------------------------------------------------------------------------------
 # 10. Cron job
-#     DuckDNS runs as VPN_USER for proper file ownership.
-#     Skipped if DUCKDNS_CRON=false (another service already updates the domain).
+#     dynv6 runs as VPN_USER for proper file ownership.
+#     Skipped if DYNV6_CRON=false (another service already updates the hostname).
 # ------------------------------------------------------------------------------
 echo ""
-echo "[10/10] Configuring DuckDNS cron job..."
+echo "[10/10] Configuring dynv6 cron job..."
 
-if [ "${DUCKDNS_CRON}" = "true" ]; then
-    # DuckDNS cron -- runs as VPN_USER
-    (crontab -u "${VPN_USER}" -l 2>/dev/null | grep -v "duck.sh" || true; \
-     echo "*/5 * * * * ${DUCKDNS_DIR}/duck.sh") | crontab -u "${VPN_USER}" -
-    echo "  ✓ DuckDNS update : every 5 minutes (runs as ${VPN_USER})"
+if [ "${DYNV6_CRON}" = "true" ]; then
+    # dynv6 cron -- runs as VPN_USER
+    (crontab -u "${VPN_USER}" -l 2>/dev/null | grep -v "dynv6.sh" || true; \
+     echo "*/5 * * * * ${DYNV6_DIR}/dynv6.sh") | crontab -u "${VPN_USER}" -
+    echo "  ✓ dynv6 update : every 5 minutes (runs as ${VPN_USER})"
 else
-    echo "  ⏭ DuckDNS cron skipped (DUCKDNS_CRON=false)"
-    echo "    Another service on this machine already updates ${DUCKDNS_FQDN}"
+    echo "  ⏭ dynv6 cron skipped (DYNV6_CRON=false)"
+    echo "    Another service on this machine already updates ${DYNV6_HOSTNAME}"
 fi
 
 # ------------------------------------------------------------------------------
@@ -411,8 +441,8 @@ echo "  SETUP COMPLETE"
 echo "=============================================="
 echo ""
 echo "  VPN user        : ${VPN_USER}"
-echo "  DuckDNS domain  : ${DUCKDNS_FQDN}"
-echo "  Public IP       : $(curl -s https://api.ipify.org)"
+echo "  dynv6 hostname  : ${DYNV6_HOSTNAME}"
+echo "  Public IP       : $(curl -4 -s https://api.ipify.org)"
 echo "  RPi local IP    : ${LOCAL_IP}"
 echo "  WireGuard subnet: ${WG_SUBNET}"
 echo ""

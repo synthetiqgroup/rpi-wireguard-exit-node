@@ -5,13 +5,13 @@
 #   sudo bash manage.sh <command> [options]
 #
 # COMMANDS:
-#   status                    Health check: WireGuard, DuckDNS, public IP, disk
+#   status                    Health check: WireGuard, dynv6, public IP, disk
 #                             (+ fail2ban, if installed via utils.sh)
 #   list                      List all client profiles and their connection status
 #   show <name>               Display a profile's .conf and QR code
 #   add  <name> [name2] ...   Create one or more client profiles
 #   remove <name> [name2] ... Remove one or more client profiles (-y to skip confirmation)
-#   duckdns-token <token>     Replace the DuckDNS token and verify it works
+#   dynv6-token <token>       Replace the dynv6 token and verify it works
 #
 # EXAMPLES:
 #   sudo bash manage.sh status
@@ -20,7 +20,7 @@
 #   sudo bash manage.sh add phone laptop
 #   sudo bash manage.sh remove phone laptop
 #   sudo bash manage.sh remove phone -y
-#   sudo bash manage.sh duckdns-token a1b2c3d4-e5f6-7890-abcd-ef1234567890
+#   sudo bash manage.sh dynv6-token <new-token>
 #
 # CONSTRAINTS:
 #   - Profile names must be 15 characters or less (WireGuard interface name limit)
@@ -32,6 +32,7 @@ set -e
 
 VPN_USER="vpnuser"
 CONFIGS_DIR="/home/${VPN_USER}/configs"
+DYNV6_DIR="/home/${VPN_USER}/dynv6"
 
 # --- colours (disabled if not a terminal) ------------------------------------
 if [ -t 1 ]; then
@@ -54,12 +55,12 @@ usage() {
     echo -e "${BOLD}Usage:${NC}  sudo bash manage.sh <command> [options]"
     echo ""
     echo -e "${BOLD}Commands:${NC}"
-    echo "  status                      Health check (WireGuard, DuckDNS, IP...)"
+    echo "  status                      Health check (WireGuard, dynv6, IP...)"
     echo "  list                        List all client profiles"
     echo "  show <name>                 Display a profile (.conf + QR code)"
     echo "  add  <name> [name2] ...     Create one or more profiles"
     echo "  remove <name> [name2] ...   Remove one or more profiles"
-    echo "  duckdns-token <token>       Replace the DuckDNS token and verify it works"
+    echo "  dynv6-token <token>         Replace the dynv6 token and verify it works"
     echo ""
     echo -e "${BOLD}Options:${NC}"
     echo "  -y, --yes                   Skip confirmation on remove"
@@ -70,7 +71,7 @@ usage() {
     echo "  sudo bash manage.sh show phone"
     echo "  sudo bash manage.sh add phone laptop"
     echo "  sudo bash manage.sh remove phone -y"
-    echo "  sudo bash manage.sh duckdns-token a1b2c3d4-..."
+    echo "  sudo bash manage.sh dynv6-token <new-token>"
     echo ""
     exit 1
 }
@@ -169,31 +170,31 @@ cmd_status() {
     fi
 
     echo ""
-    echo -e "${BOLD}DuckDNS${NC}"
+    echo -e "${BOLD}dynv6${NC}"
     echo "─────────────────────────────────────────"
 
-    local duck_log="/home/${VPN_USER}/duckdns/duck.log"
-    if [ -f "$duck_log" ]; then
-        local duck_result
-        duck_result=$(cat "$duck_log")
-        if [ "$duck_result" = "OK" ]; then
-            echo -e "  Last update:    ${GREEN}OK${NC}"
+    local dynv6_log="${DYNV6_DIR}/dynv6.log"
+    if [ -f "$dynv6_log" ]; then
+        local dynv6_result
+        dynv6_result=$(cat "$dynv6_log")
+        if [[ "$dynv6_result" =~ ^addresses\ (updated|unchanged) ]]; then
+            echo -e "  Last update:    ${GREEN}OK${NC} (${dynv6_result}, $(date -r "$dynv6_log" '+%Y-%m-%d %H:%M'))"
         else
-            echo -e "  Last update:    ${RED}${duck_result}${NC}"
+            echo -e "  Last update:    ${RED}${dynv6_result:-empty response}${NC}"
         fi
     else
         echo -e "  Last update:    ${YELLOW}no log found${NC}"
     fi
 
-    # DuckDNS resolved IP vs actual public IP
-    local duck_script="/home/${VPN_USER}/duckdns/duck.sh"
-    if [ -f "$duck_script" ]; then
+    # dynv6 resolved IP vs actual public IP
+    local dynv6_script="${DYNV6_DIR}/dynv6.sh"
+    if [ -f "$dynv6_script" ]; then
         local domain
-        domain=$(grep -oP 'domains=\K[^&]+' "$duck_script" 2>/dev/null)
+        domain=$(grep -oP '^DYNV6_HOSTNAME="\K[^"]+' "$dynv6_script" 2>/dev/null)
         if [ -n "$domain" ]; then
             local dns_ip
-            dns_ip=$(dig +short "${domain}.duckdns.org" 2>/dev/null | head -1)
-            echo -e "  DNS resolves:   ${domain}.duckdns.org → ${dns_ip:-unknown}"
+            dns_ip=$(dig +short A "${domain}" 2>/dev/null | head -1)
+            echo -e "  DNS resolves:   ${domain} → ${dns_ip:-unknown}"
             if [ "$dns_ip" = "$pub_ip" ]; then
                 echo -e "  DNS match:      ${GREEN}✓ matches public IP${NC}"
             elif [ -n "$dns_ip" ]; then
@@ -419,36 +420,41 @@ cmd_remove() {
     echo -e "${GREEN}Done.${NC}"
 }
 
-cmd_duckdns_token() {
+cmd_dynv6_token() {
     local new_token="$1"
-    local duck_script="/home/${VPN_USER}/duckdns/duck.sh"
+    local dynv6_script="${DYNV6_DIR}/dynv6.sh"
 
     if [ -z "$new_token" ]; then
-        echo -e "${RED}Error: provide the new DuckDNS token.${NC}"
-        echo "  Usage: sudo bash manage.sh duckdns-token <token>"
+        echo -e "${RED}Error: provide the new dynv6 token.${NC}"
+        echo "  Usage: sudo bash manage.sh dynv6-token <token>"
         exit 1
     fi
 
-    if [ ! -f "$duck_script" ]; then
-        echo -e "${RED}Error: ${duck_script} not found. Run setup.sh first.${NC}"
+    if [[ ! "$new_token" =~ ^[A-Za-z0-9_-]+$ ]]; then
+        echo -e "${RED}Error: invalid token (letters, digits, '_' or '-' only).${NC}"
         exit 1
     fi
 
-    # Replace the token in duck.sh
-    sed -i "s|token=[^&]*&|token=${new_token}\&|" "$duck_script"
-    echo -e "${GREEN}✓ Token updated in ${duck_script}${NC}"
+    if [ ! -f "$dynv6_script" ]; then
+        echo -e "${RED}Error: ${dynv6_script} not found. Run setup.sh first.${NC}"
+        exit 1
+    fi
+
+    # Replace the token in dynv6.sh
+    sed -i "s|^DYNV6_TOKEN=.*|DYNV6_TOKEN=\"${new_token}\"|" "$dynv6_script"
+    echo -e "${GREEN}✓ Token updated in ${dynv6_script}${NC}"
 
     # Test immediately
-    echo -e "${CYAN}Testing DuckDNS update...${NC}"
-    sudo -u "${VPN_USER}" "$duck_script"
+    echo -e "${CYAN}Testing dynv6 update...${NC}"
+    sudo -u "${VPN_USER}" "$dynv6_script"
     local result
-    result=$(cat /home/${VPN_USER}/duckdns/duck.log)
+    result=$(cat "${DYNV6_DIR}/dynv6.log")
 
-    if [ "$result" = "OK" ]; then
-        echo -e "${GREEN}✓ DuckDNS responded OK — token is valid.${NC}"
+    if [[ "$result" =~ ^addresses\ (updated|unchanged) ]]; then
+        echo -e "${GREEN}✓ dynv6 responded \"${result}\" — token is valid.${NC}"
     else
-        echo -e "${RED}✗ DuckDNS responded: ${result}${NC}"
-        echo -e "${YELLOW}Double-check your token at https://www.duckdns.org${NC}"
+        echo -e "${RED}✗ dynv6 responded: ${result:-empty response}${NC}"
+        echo -e "${YELLOW}Double-check your token at https://dynv6.com/keys${NC}"
         exit 1
     fi
 }
@@ -466,7 +472,7 @@ case "${1:-}" in
     show)            shift; cmd_show "$@" ;;
     add)             shift; cmd_add "$@" ;;
     remove|rm|del)   shift; cmd_remove "$@" ;;
-    duckdns-token)   shift; cmd_duckdns_token "$@" ;;
+    dynv6-token)     shift; cmd_dynv6_token "$@" ;;
     -h|--help|help)  usage ;;
     *)               usage ;;
 esac
