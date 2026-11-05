@@ -334,6 +334,14 @@ cmd_add() {
         pivpn add -n "$name" -ip auto
 
         if [ -f "$conf" ]; then
+            # Route IPv6 into the tunnel too (leak prevention, same as setup.sh),
+            # in both copies: /etc/wireguard/configs is the one `pivpn -qr` reads
+            local copy
+            for copy in "/etc/wireguard/configs/${name}.conf" "$conf"; do
+                [ -f "$copy" ] || continue
+                grep -qE "^AllowedIPs = .*::(0)?/0" "$copy" || \
+                    sed -i "s/^AllowedIPs = 0.0.0.0\/0$/AllowedIPs = 0.0.0.0\/0, ::\/0/" "$copy"
+            done
             echo -e "${GREEN}✓ Profile '${name}' created.${NC}"
             echo ""
             echo -e "${BOLD}--- ${name}.conf (paste into your WireGuard client) ---${NC}"

@@ -172,6 +172,8 @@ echo "  ✓ Dependencies installed"
 #    Updates the public IPv4 on dynv6 every 5 minutes via cron.
 #    curl -4 + ipv4=auto: dynv6 records the source address of the request,
 #    forced over IPv4 so it is the home IPv4 even if the RPi has IPv6.
+#    Retries for ~1 min on network errors (e.g. cron run right after boot);
+#    if curl still fails, the error is logged instead of an empty log.
 #    Script (contains the token, mode 700) and logs are owned by VPN_USER.
 # ------------------------------------------------------------------------------
 echo ""
@@ -183,7 +185,11 @@ cat > "${DYNV6_DIR}/dynv6.sh" << EOF
 #!/bin/bash
 DYNV6_HOSTNAME="${DYNV6_HOSTNAME}"
 DYNV6_TOKEN="${DYNV6_TOKEN}"
-curl -4 -s --max-time 30 "https://dynv6.com/api/update?hostname=\${DYNV6_HOSTNAME}&token=\${DYNV6_TOKEN}&ipv4=auto" > ${DYNV6_DIR}/dynv6.log 2>&1
+RESPONSE=\$(curl -4 -s --max-time 30 --retry 5 --retry-delay 10 --retry-all-errors \\
+    "https://dynv6.com/api/update?hostname=\${DYNV6_HOSTNAME}&token=\${DYNV6_TOKEN}&ipv4=auto")
+RC=\$?
+[ "\${RC}" -ne 0 ] && RESPONSE="error: curl exit code \${RC} (network or DNS failure)"
+echo "\${RESPONSE}" > ${DYNV6_DIR}/dynv6.log
 EOF
 
 chmod 700 "${DYNV6_DIR}/dynv6.sh"
@@ -275,7 +281,7 @@ if [ -f /etc/wireguard/wg0.conf ]; then
     PIVPN_VARS="/etc/pivpn/wireguard/setupVars.conf"
     if [ -f "${PIVPN_VARS}" ] && ! grep -q "^pivpnHOST=${DYNV6_HOSTNAME}$" "${PIVPN_VARS}"; then
         sed -i "s|^pivpnHOST=.*|pivpnHOST=${DYNV6_HOSTNAME}|" "${PIVPN_VARS}"
-        echo "  ✓ PiVPN hostname updated to ${DYNV6_HOSTNAME} (new profiles only)"
+        echo "  ✓ PiVPN hostname updated to ${DYNV6_HOSTNAME} (new profiles)"
     fi
 else
     cat > /tmp/pivpn-unattended.conf << EOF
@@ -351,33 +357,51 @@ fi
 # 8. WireGuard client profiles
 #    Generates .conf files to paste into the WireGuard clients.
 #    Profiles: WG_CLIENT_NAMES array. Client IP: first available in the WireGuard subnet.
-#    AllowedIPs also covers ::/0 so IPv6 traffic is tunneled (and dropped, not
-#    leaked) instead of bypassing the VPN over the client's native IPv6.
+#    Then every profile (new and existing) is brought in line, in both copies
+#    PiVPN keeps: /etc/wireguard/configs (original, used by `pivpn -qr`) and
+#    /home/VPN_USER/configs (copy, shown by `manage.sh show`):
+#    - AllowedIPs also covers ::/0 so IPv6 traffic is tunneled (and dropped,
+#      not leaked) instead of bypassing the VPN over the client's native IPv6
+#    - Endpoint points at DYNV6_HOSTNAME (port kept)
+#    Devices already configured keep their own copy: update them separately.
 # ------------------------------------------------------------------------------
 echo ""
 echo "[8/10] Creating WireGuard client profiles..."
 
+CREATED_PROFILES=()
 for CLIENT_NAME in "${WG_CLIENT_NAMES[@]}"; do
     CLIENT_CONF="/home/${VPN_USER}/configs/${CLIENT_NAME}.conf"
     if [ -f "${CLIENT_CONF}" ]; then
         echo "  Profile already exists: ${CLIENT_CONF}, skipping."
+    elif command -v pivpn &>/dev/null; then
+        pivpn add -n "${CLIENT_NAME}" -ip auto
+        CREATED_PROFILES+=("${CLIENT_NAME}")
+        echo "  ✓ Profile created: ${CLIENT_CONF}"
     else
-        if command -v pivpn &>/dev/null; then
-            pivpn add -n "${CLIENT_NAME}" -ip auto
-            # Force IPv6 traffic through the tunnel too (server drops it, IPv6
-            # is disabled) so the client can't leak it outside the VPN.
-            if ! grep -q "::/0" "${CLIENT_CONF}"; then
-                sed -i "s/^AllowedIPs = 0.0.0.0\/0$/AllowedIPs = 0.0.0.0\/0, ::\/0/" "${CLIENT_CONF}"
-            fi
-            echo "  ✓ Profile created: ${CLIENT_CONF}"
-            echo ""
-            echo "  --- ${CLIENT_NAME} config (paste into VPN -> WireGuard Client -> Add Profiles -> Manually) ---"
-            cat "${CLIENT_CONF}"
-            echo "  ---------------------------------------------------------------------------------------"
-        else
-            echo "  PiVPN not found, skipping profile creation."
-        fi
+        echo "  PiVPN not found, skipping profile creation."
     fi
+done
+
+for CONF in /etc/wireguard/configs/*.conf "/home/${VPN_USER}/configs/"*.conf; do
+    [ -f "${CONF}" ] || continue
+    # PiVPN may already write "::0/0" (same as "::/0")
+    if ! grep -qE "^AllowedIPs = .*::(0)?/0" "${CONF}"; then
+        sed -i "s/^AllowedIPs = 0.0.0.0\/0$/AllowedIPs = 0.0.0.0\/0, ::\/0/" "${CONF}"
+        grep -qE "^AllowedIPs = .*::/0" "${CONF}" && \
+            echo "  ✓ IPv6 (::/0) routed into the tunnel in ${CONF}"
+    fi
+    if ! grep -q "^Endpoint = ${DYNV6_HOSTNAME}:" "${CONF}"; then
+        sed -i -E "s|^Endpoint = .*:([0-9]+)$|Endpoint = ${DYNV6_HOSTNAME}:\1|" "${CONF}"
+        grep -q "^Endpoint = ${DYNV6_HOSTNAME}:" "${CONF}" && \
+            echo "  ✓ Endpoint set to ${DYNV6_HOSTNAME} in ${CONF}"
+    fi
+done
+
+for CLIENT_NAME in "${CREATED_PROFILES[@]}"; do
+    echo ""
+    echo "  --- ${CLIENT_NAME} config (paste into VPN -> WireGuard Client -> Add Profiles -> Manually) ---"
+    cat "/home/${VPN_USER}/configs/${CLIENT_NAME}.conf"
+    echo "  ---------------------------------------------------------------------------------------"
 done
 
 # ------------------------------------------------------------------------------
